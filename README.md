@@ -11,7 +11,7 @@ This repository contains a scientific study and LaTeX report on the **Revised Si
 revised-simplex-report/
 │
 ├── main.tex                         # Main LaTeX file
-├── output/                          # Compiled output files
+├── docs/                          
 │   └── revised_simplex_report.pdf   # Compiled PDF report
 ├── bib/
 │   └── references.bib               # BibTeX references
@@ -79,16 +79,16 @@ pip install -r requirements.txt
 ### Local Compilation
 
 ```bash
-pdflatex -output-directory=output -jobname=revised_simplex_report main.tex
-biber output/revised_simplex_report
-pdflatex -output-directory=output -jobname=revised_simplex_report main.tex
-pdflatex -output-directory=output -jobname=revised_simplex_report main.tex
+pdflatex -output-directory=docs -jobname=revised_simplex_report main.tex
+biber docs/revised_simplex_report
+pdflatex -output-directory=docs -jobname=revised_simplex_report main.tex
+pdflatex -output-directory=docs -jobname=revised_simplex_report main.tex
 ```
 
 The resulting PDF will be located at:
 
 ```
-output/revised_simplex_report.pdf
+docs/revised_simplex_report.pdf
 ```
 
 ### Overleaf
