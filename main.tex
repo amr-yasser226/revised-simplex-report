@@ -1,0 +1,707 @@
+% main.tex
+\documentclass[11pt,a4paper]{article}
+
+% -------------------------
+% Packages and formatting
+% -------------------------
+\usepackage[utf8]{inputenc}
+% bibliography: modern biblatex + biber
+\usepackage[backend=biber,style=numeric,sorting=nyt]{biblatex}
+\addbibresource{bib/references.bib} % adjust path to your .bib file (repo: bib/references.bib)
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{geometry}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{mathtools}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{caption}
+\usepackage{enumitem}
+\usepackage{float}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{listings}
+\usepackage{xcolor}
+
+\geometry{margin=1in}
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue,
+    citecolor=blue,
+    urlcolor=blue
+}
+\setcounter{tocdepth}{2}
+
+% -------------------------
+% Theorem / definition styles
+% -------------------------
+\theoremstyle{definition}
+\newtheorem{definition}{Definition}[section]
+\theoremstyle{plain}
+\newtheorem{theorem}{Theorem}[section]
+\newtheorem{lemma}{Lemma}[section]
+
+% -------------------------
+% Macros & notation
+% -------------------------
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\T}{\mathsf{T}}
+\newcommand{\inv}[1]{#1^{-1}}
+\newcommand{\vect}[1]{\mathbf{#1}}
+\newcommand{\TODO}[1]{{\color{red}[TODO: #1]}}
+
+% -------------------------
+% Listings (Python)
+% -------------------------
+\lstset{
+  language=Python,
+  basicstyle=\ttfamily\small,
+  numbers=left,
+  numberstyle=\tiny,
+  breaklines=true,
+  frame=single,
+  backgroundcolor=\color{gray!6},
+  showstringspaces=false
+}
+
+% -------------------------
+% Title & authors (no emails)
+% -------------------------
+\title{Revised Simplex Method for Solving Linear Programming Problems}
+\author{
+    Amr Yasser Anwar\thanks{Dept. of CSAI, Zewail City, University of Science and Technology, Egypt.} 
+    \and 
+    Omar Hazem Ahmed\thanks{Dept. of CSAI, Zewail City, University of Science and Technology, Egypt.}
+}
+\date{\today\thanks{This work is licensed under a 
+\href{https://creativecommons.org/licenses/by-sa/4.0/}{Creative Commons Attribution-ShareAlike 4.0 International (CC BY-SA 4.0) License}.}}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This report studies the \emph{Revised Simplex Method} for linear programming.
+We provide a compact but rigorous presentation: motivation, mathematical
+theory (including the classical tableau connection), algorithmic pseudocode
+(Phase I + Phase II), implementation choices and numerical safeguards, and a
+set of experiments illustrating regular and pathological cases. We compare
+our implementation to a modern Python solver (SciPy's \texttt{linprog})
+and discuss numerical behaviour and complexity trade-offs.
+\end{abstract}
+
+\tableofcontents
+\clearpage
+
+% -------------------------
+\section{Motivation}
+% -------------------------
+\label{sec:motivation}
+
+Linear programming (LP) is a cornerstone of optimization with broad
+applications in operations research, economics, engineering design, and
+machine learning. The classical Simplex method (Dantzig) remains a fundamental
+algorithm because it provides exact combinatorial certificates (optimal basis,
+unboundedness, or infeasibility) and is very efficient in practice.
+However, the classical tableau-based Simplex stores and manipulates an entire
+tableau, which is memory-inefficient and costly for large or sparse problems.
+
+The \emph{Revised Simplex Method} addresses these issues by maintaining only
+the basis matrix $B$ (or its factorization) and a few auxiliary vectors.
+This reduces memory usage, allows efficient linear algebra (LU factorization
+and updates), and separates numeric linear algebra from combinatorial pivot
+selection.
+
+Key reasons to implement the revised variant:
+\begin{itemize}
+  \item Better memory scaling for large / sparse $A$.
+  \item Numerically more stable if LU factorization with pivoting is used.
+  \item Easier to integrate with high-performance sparse linear algebra.
+\end{itemize}
+
+% -------------------------
+\section{Theory}
+% -------------------------
+\label{sec:theory}
+
+\subsection{Standard form and notation}
+We work with the standard (maximization) form:
+\[
+  \begin{aligned}
+    \text{maximize} \quad & c^\T x \\
+    \text{subject to} \quad & A x = b, \\
+                           & x \ge 0,
+  \end{aligned}
+\]
+where $A\in\R^{m\times n}$, $b\in\R^{m}$, $c\in\R^n$, typically $m<n$.  
+A \emph{basis} is an index set $B$ of size $m$ whose columns $A_B$ are
+linearly independent. We denote the basic and nonbasic variables by $x_B$
+and $x_N$ respectively. The basic feasible solution (BFS) corresponding to
+$B$ is $x_B = B^{-1} b,\; x_N = 0$.
+
+\paragraph{Dual variables and reduced costs.}
+Let $c_B,c_N$ be the cost subvectors. Define the simplex dual vector
+$y = B^{-\T} c_B$. The reduced costs for nonbasic indices are
+\[
+  \bar{c}_N = c_N - A_N^\T y.
+\]
+For a maximization problem the current BFS is optimal iff $\bar{c}_N \le 0$
+(componentwise). A positive reduced cost indicates a profitable nonbasic
+variable to enter.
+
+\subsection{Tableau connection}
+The classical simplex tableau encodes $B^{-1}A$ and $B^{-1}b$; its rows
+correspond to basic variables. The revised simplex computes exactly the same
+quantities (reduced costs, directions, ratios) but avoids forming the full
+tableau $B^{-1}A$, instead computing quantities column-by-column via linear
+solves with $B$ or via factorized solves (LU).
+
+To illustrate, the tableau (partial) has rows:
+\[
+\begin{array}{c|c|c}
+\text{basic} & B^{-1}A_N & B^{-1}b \\
+\hline
+x_B & D & x_B
+\end{array}
+\]
+where column $j$ of $D$ is the solution $d=B^{-1}a_j$.
+
+\subsection{Certificates and special cases}
+\begin{itemize}
+  \item \textbf{Optimality certificate:} $\bar{c}_N \le 0$ and $x_B\ge0$.
+  \item \textbf{Unboundedness certificate:} for entering column $q$, if $B^{-1}a_q \le 0$ then the objective is unbounded along that direction.
+  \item \textbf{Infeasibility:} no BFS exists — detected via Phase~I (auxiliary LP) if Phase~I optimal value $>0$.
+  \item \textbf{Degeneracy and cycling:} degenerate pivots (some $x_{B_i}=0$) can cause cycling; use Bland's rule or lexicographic perturbation.
+\end{itemize}
+
+% -------------------------
+\section{Algorithm}
+% -------------------------
+\label{sec:algorithm}
+
+This section presents concise and practical pseudocode for both phases.
+Phase I constructs a feasible basis when none is available; Phase II
+optimizes the original objective starting from a feasible basis.
+
+\subsection{Phase I (auxiliary feasibility problem)}
+Given $A,b$ with possibly no obvious BFS, form the auxiliary (minimization)
+LP by adding artificial variables $r\in\R^m$:
+\[
+  \min\; \mathbf{1}^\T r \quad\text{s.t.}\quad A x + I r = b,\; x\ge0,\ r\ge0.
+\]
+Initialize basis $B$ as the artificial columns (so $r=b$ initially if $b\ge0$)
+and run the revised simplex on $(A_{\mathrm{aux}}=[A\mid I],\; b,\; c_{\mathrm{aux}})$.
+If the optimal Phase~I objective $> \varepsilon$ ($\varepsilon$ small tolerance)
+then the original LP is infeasible. Otherwise remove artificial variables
+from the basis (pivot them out) to obtain a feasible basis for the original LP.
+
+\begin{algorithm}[H]
+\caption{Phase I (sketch)}
+\begin{algorithmic}[1]
+\Require $A,b$
+\State Build $A_{\mathrm{aux}} = [A \mid I_m]$, \; $c_{\mathrm{aux}} = [0_n;\,1_m]$
+\State Initialize basis $B \leftarrow$ indices of artificial columns
+\State \texttt{Run RevisedSimplex}($A_{\mathrm{aux}},\,b,\,c_{\mathrm{aux}},\,B$) until optimal
+\If{optimal objective $>\varepsilon$}
+  \State \Return INFEASIBLE
+\Else
+  \State Remove artificial columns from basis (pivot out or drop redundant rows)
+  \State \Return feasible basis $B_{\mathrm{feasible}}$
+\EndIf
+\end{algorithmic}
+\end{algorithm}
+
+\subsection{Phase II (optimization using Revised Simplex)}
+Assume a feasible basis $B$ is available. We keep an LU factorization of $B$
+and use it for the linear solves needed.
+
+\begin{algorithm}[H]
+\caption{Revised Simplex (Phase II) — LU-based}
+\begin{algorithmic}[1]
+\Require $A\in\R^{m\times n}$, $b\in\R^m$, $c\in\R^n$, feasible basis $B$
+\Ensure Optimal basis and solution or certificate of unboundedness
+\State Compute LU factorization of $B$ (with pivoting)
+\State Compute $x_B \leftarrow B^{-1} b$ (solve via LU)
+\For{iteration = 1 \textbf{to} \texttt{max\_iters}}
+  \State Compute $y \leftarrow B^{-\T} c_B$ (solve LU-transpose)
+  \State For each $j\in N$: compute reduced cost $\bar{c}_j = c_j - a_j^\T y$
+  \If{all $\bar{c}_j \le \mathrm{tol}$ for $j\in N$}
+    \State \Return (optimal, $x$)
+  \EndIf
+  \State Choose entering index $q\in N$ (pricing rule; e.g., largest $\bar{c}_j$ or Bland)
+  \State Solve $B d = a_q$ for direction $d$ (LU solve)
+  \If{$d \le \mathrm{tol}$ componentwise}
+    \State \Return (unbounded)
+  \EndIf
+  \State Compute step length $\theta^* = \min\{x_{B_i}/d_i : d_i>\mathrm{tol}\}$ and leaving index $p$
+  \State Pivot: replace $p$ by $q$ in basis indices
+  \State Update LU factorization (rebuild or use efficient update)
+  \State Update $x_B \leftarrow x_B - \theta^* d$ and set $x_q = \theta^*$
+\EndFor
+\State \Return (max\_iters\_reached)
+\end{algorithmic}
+\end{algorithm}
+
+\paragraph{Pivot / pricing choices.}
+For coursework, full pricing (compute all reduced costs) is simple and
+sufficient. For larger problems consider partial pricing or steepest-edge
+heuristics. Use Bland's rule to avoid cycling.
+
+\paragraph{LU updates.}
+Two pragmatic choices:
+\begin{itemize}
+  \item Recompute LU after each pivot (robust, simple; cost $O(m^3)$ per rebuild).
+  \item Use sparse LU updates / ETA updates and rebuild periodically (faster in practice for large $m$).
+\end{itemize}
+
+% -------------------------
+\section{Implementation}
+% -------------------------
+\label{sec:implementation}
+
+This section records the concrete choices made in the implementation and
+practical tips to reproduce results.
+
+\subsection{Language, libraries and environment}
+Implementation used: Python 3.9+. Main libraries:
+\begin{itemize}
+  \item \texttt{numpy} and \texttt{scipy.linalg} for linear algebra (\texttt{lu\_factor}/\texttt{lu\_solve}).
+  \item \texttt{scipy.optimize.linprog} (method=\texttt{highs}) for baseline comparisons.
+  \item Use a \texttt{requirements.txt} to pin versions; record the git commit hash.
+\end{itemize}
+
+\subsection{Data structures and API}
+\begin{itemize}
+  \item Store $A$ as \texttt{numpy.ndarray}. For larger work use SciPy sparse.
+  \item Basis indices as integer arrays/lists ($B$ and $N$).
+  \item Public API: \texttt{solve(A,b,c, B0=None, tol=1e-9, max\_iters=10000)} returning status, solution $x$, objective, and iteration log.
+\end{itemize}
+
+\subsection{Numerical safeguards and tolerances}
+\begin{itemize}
+  \item Use tolerance $\mathrm{tol}=10^{-9}$ for zero checks (reduced costs,
+    pivot denominators).
+  \item Use LU with partial pivoting for numerical stability.
+  \item Rebuild LU factorization if condition numbers grow or after a fixed number of pivots.
+  \item Implement Bland's anti-cycling rule as a fallback.
+\end{itemize}
+
+% -------------------------
+\section{Examples and Experiments}
+% -------------------------
+\label{sec:experiments}
+
+We run several small, illustrative experiments. Each example includes the
+standard-form matrices, the basis chosen, the algebraic steps performed by
+one or two revised-simplex iterations (reduced costs, duals, directions,
+ratio tests), and a short discussion. The goal is to make the textbook
+mechanics explicit so you can reproduce the iteration logs in
+\texttt{results/}.
+
+\subsection{Example 1 --- Regular feasible LP (worked through)}
+
+Maximize \(3x_1 + 2x_2\) subject to
+\[
+\begin{aligned}
+x_1 + x_2 &\le 4,\\
+x_1 + 3x_2 &\le 6,\\
+x_1,x_2 &\ge 0.
+\end{aligned}
+\]
+Introduce slack variables \(s_1,s_2\ge0\) to convert to equalities. Using the
+variable ordering \((x_1,x_2,s_1,s_2)\) the equality system is
+\[
+A = \begin{bmatrix} 1 & 1 & 1 & 0 \\[2pt] 1 & 3 & 0 & 1 \end{bmatrix},\qquad
+b=\begin{bmatrix}4\\[2pt]6\end{bmatrix},\qquad
+c=\begin{bmatrix}3\\[2pt]2\\[2pt]0\\[2pt]0\end{bmatrix}.
+\]
+We start with the obvious feasible basis \(B=\{s_1,s_2\}\) (columns 3 and 4).
+
+\paragraph{Initial basic solution.}
+Since \(B=I_2\),
+\[
+x_B = B^{-1} b = b = \begin{bmatrix}4\\[2pt]6\end{bmatrix},\qquad x_N=0.
+\]
+The basis costs are \(c_B=[0,0]^\T\).
+
+\paragraph{Iteration 0 (compute reduced costs).}
+Compute the simplex dual \(y = B^{-\T} c_B = 0\). The reduced costs for the
+nonbasic columns (here \(x_1,x_2\)) are
+\[
+\bar c = c_N - A_N^\T y = \begin{bmatrix}3\\[2pt]2\end{bmatrix}.
+\]
+Because we are maximizing, any positive reduced cost indicates a profitable
+entering variable. Choose \(x_1\) (largest reduced cost \(3\)) to enter.
+
+\paragraph{Direction and ratio test.}
+Solve \(B d = a_{x_1}\); with \(B=I\) we get
+\[
+d = a_{x_1} = \begin{bmatrix}1\\[2pt]1\end{bmatrix}.
+\]
+Form the ratio test for components with \(d_i>0\):
+\[
+\theta_i = x_{B_i}/d_i = \{4/1,\;6/1\} = \{4,6\}.
+\]
+Minimum ratio is \(\theta^*=4\) leaving variable \(s_1\) (row~1). We update
+\[
+x_B \leftarrow x_B - 4 d = \begin{bmatrix}4\\[2pt]6\end{bmatrix} - 4\begin{bmatrix}1\\[2pt]1\end{bmatrix} =
+\begin{bmatrix}0\\[2pt]2\end{bmatrix},
+\]
+and set \(x_1=\theta^*=4\). Objective increases by \(4\cdot 3 = 12\).
+
+\paragraph{New basis and optimality check.}
+New basis index set: \(B=\{x_1,s_2\}\) (columns 1 and 4). The basis matrix is
+\[
+B = \begin{bmatrix}1 & 0 \\[2pt] 1 & 1\end{bmatrix},\qquad
+B^{-1} = \begin{bmatrix}1 & 0 \\[2pt] -1 & 1\end{bmatrix}.
+\]
+Compute the new dual
+\[
+y = B^{-\T} c_B,\qquad c_B = \begin{bmatrix}3\\[2pt]0\end{bmatrix}
+\Rightarrow B^{-\T} = (B^{-1})^\T = \begin{bmatrix}1 & -1 \\[2pt] 0 & 1\end{bmatrix},
+\]
+so
+\[
+y = \begin{bmatrix}1 & -1 \\[2pt] 0 & 1\end{bmatrix}\begin{bmatrix}3\\[2pt]0\end{bmatrix}
+= \begin{bmatrix}3\\[2pt]0\end{bmatrix}.
+\]
+Reduced cost for \(x_2\) is
+\[
+\bar c_{x_2} = c_{x_2} - a_{x_2}^\T y = 2 - \begin{bmatrix}1\\[2pt]3\end{bmatrix}^\T
+\begin{bmatrix}3\\[2pt]0\end{bmatrix} = 2 - 3 = -1 \le 0.
+\]
+All reduced costs for nonbasics are nonpositive, so the current BFS is
+optimal.
+
+\paragraph{Result.}
+Optimal basic feasible solution:
+\[
+x = (x_1,x_2,s_1,s_2) = (4,0,0,2),\qquad \text{objective } = 12.
+\]
+
+\paragraph{Iteration log (compact).}
+\begin{center}
+\begin{tabular}{lrrrr}
+\toprule
+Iter & Entering & Leaving & Objective & Basic solution \\
+\midrule
+0 & -- & -- & 0 & \((s_1,s_2)=(4,6)\) \\
+1 & \(x_1\) & \(s_1\) & 12 & \((x_1,x_2)=(4,0)\) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+This matches the simple handwritten simplex; the revised-simplex
+implementation should produce the same pivots and objective values (up to
+tolerances).
+
+\subsection{Example 2 --- Phase I required (worked example)}
+
+We now present an LP that requires an explicit Phase~I because the natural
+slack/surplus choice does not immediately provide a feasible basis.
+
+Consider the maximization problem
+\[
+\max\; 5x_1 + 4x_2
+\quad\text{subject to}\quad
+\begin{aligned}
+x_1 + x_2 &\ge 4,\\[2pt]
+x_1 + 2x_2 &\ge 5,\\[2pt]
+x_1,x_2 &\ge 0.
+\end{aligned}
+\]
+Convert \(\ge\) constraints to equalities by subtracting surplus variables
+\(s_1,s_2\ge0\) and adding artificial variables \(a_1,a_2\ge0\):
+\[
+\begin{aligned}
+x_1 + x_2 - s_1 + a_1 &= 4,\\[2pt]
+x_1 + 2x_2 - s_2 + a_2 &= 5.
+\end{aligned}
+\]
+Use the variable ordering \((x_1,x_2,s_1,s_2,a_1,a_2)\). The augmented matrix
+and right-hand side are
+\[
+A_{\text{aug}} = \begin{bmatrix}
+1 & 1 & -1 & 0 & 1 & 0 \\[2pt]
+1 & 2 &  0 & -1& 0 & 1
+\end{bmatrix},\qquad
+b = \begin{bmatrix}4\\[2pt]5\end{bmatrix}.
+\]
+
+\paragraph{Phase~I formulation.}
+The Phase~I objective is \(\min\; a_1 + a_2\), i.e. the auxiliary cost vector
+is \(c_{\text{aux}} = [0\ 0\ 0\ 0\ 1\ 1]^\T\). Initialize the basis to the
+artificial columns \(B=\{a_1,a_2\}\) (indices 5 and 6). With this choice
+\(B=I\) and the initial basic solution is
+\[
+a = b = \begin{bmatrix}4\\[2pt]5\end{bmatrix},\quad x_1=x_2=s_1=s_2=0,
+\]
+so the initial Phase~I objective equals \(4+5=9\).
+
+Below we show two simplex pivots that drive the Phase~I objective down to
+zero and remove the artificial variables from the basis. These algebraic
+steps are chosen to illustrate the mechanics of revised simplex in Phase~I
+(not the only possible pivot sequence).
+
+\paragraph{Phase~I — iteration 0 (initial reduced costs).}
+With \(B=I\) and \(c_B=[1,1]^\T\) the dual equals \(y = c_B\). Reduced costs
+for nonbasics \((x_1,x_2,s_1,s_2)\) are
+\begin{align*}
+\bar c_{x_1} &= 0 - [1;1]^\T\begin{bmatrix}1\\[2pt]1\end{bmatrix} = -2,\\[2pt]
+\bar c_{x_2} &= 0 - [1;2]^\T\begin{bmatrix}1\\[2pt]1\end{bmatrix} = -3,\\[2pt]
+\bar c_{s_1} &= 0 - [-1;0]^\T\begin{bmatrix}1\\[2pt]1\end{bmatrix} = +1,\\[2pt]
+\bar c_{s_2} &= 0 - [0;-1]^\T\begin{bmatrix}1\\[2pt]1\end{bmatrix} = +1.
+\end{align*}
+Because Phase~I is a minimization of the sum of artificials, a negative
+reduced cost indicates a direction that reduces the Phase~I objective.
+We therefore pick \(x_2\) (most negative reduced cost \(-3\)) to enter.
+
+Solve \(B d = a_{x_2}\): with \(B=I\) we have \(d = a_{x_2} = [1\;2]^\T\).
+Ratio test:
+\[
+\theta = \min\{4/1,\;5/2\} = \min\{4,\;2.5\} = 2.5,
+\]
+so the leaving variable is \(a_2\) (row~2). After the pivot the new basis is
+\(B=\{a_1,x_2\}\). Compute the updated basic solution by forming the new
+basis inverse (here small so we compute it explicitly):
+\[
+B = \begin{bmatrix}1 & 1 \\[2pt] 0 & 2 \end{bmatrix},\qquad
+B^{-1} = \begin{bmatrix}1 & -\tfrac12 \\[2pt] 0 & \tfrac12\end{bmatrix}.
+\]
+Thus the new basic vector is
+\[
+x_B = B^{-1} b = \begin{bmatrix}1 & -\tfrac12 \\[2pt] 0 & \tfrac12\end{bmatrix}
+\begin{bmatrix}4\\[2pt]5\end{bmatrix} = \begin{bmatrix}1.5\\[2pt]2.5\end{bmatrix},
+\]
+so the artificial \(a_1=1.5\), \(x_2=2.5\), and the Phase~I objective has
+fallen from \(9\) to \(1.5\) (since \(a_2\) left the basis and became zero).
+
+\paragraph{Phase~I — iteration 1 (remove remaining artificial).}
+With the new basis \(B=\{a_1,x_2\}\) the basis costs are \(c_B=[1,0]^\T\).
+The new dual is
+\[
+y = B^{-\T} c_B = (B^{-1})^\T c_B =
+\begin{bmatrix}1 & 0 \\[2pt] -\tfrac12 & \tfrac12\end{bmatrix}
+\begin{bmatrix}1\\[2pt]0\end{bmatrix} = \begin{bmatrix}1\\[2pt]-\tfrac12\end{bmatrix}.
+\]
+Reduced costs for the remaining nonbasics (including \(x_1\)) are:
+\begin{align*}
+\bar c_{x_1} &= 0 - \begin{bmatrix}1\\[2pt]1\end{bmatrix}^\T y
+            = 0 - (1\cdot 1 + 1\cdot(-\tfrac12)) = -\tfrac12,\\[2pt]
+\bar c_{s_1} &= 0 - \begin{bmatrix}-1\\[2pt]0\end{bmatrix}^\T y
+            = 0 - (-1\cdot 1 + 0\cdot(-\tfrac12)) = +1,\\[2pt]
+\bar c_{a_2} &= 1 - \begin{bmatrix}0\\[2pt]1\end{bmatrix}^\T y
+            = 1 - (0\cdot 1 + 1\cdot(-\tfrac12)) = 1.5.
+\end{align*}
+The most negative reduced cost is \(\bar c_{x_1}=-\tfrac12\), so choose
+\(x_1\) to enter. Solve \(B d = a_{x_1}\) with
+\(a_{x_1} = \begin{bmatrix}1\\[2pt]1\end{bmatrix}\), and
+\[
+d = B^{-1} a_{x_1} = \begin{bmatrix}1 & -\tfrac12 \\[2pt] 0 & \tfrac12\end{bmatrix}
+\begin{bmatrix}1\\[2pt]1\end{bmatrix} = \begin{bmatrix}\tfrac12\\[2pt]\tfrac12\end{bmatrix}.
+\]
+Ratio test over positive components of \(d\):
+\[
+\theta_i = x_{B_i}/d_i = \{1.5/(\tfrac12),\;2.5/(\tfrac12)\} = \{3,\;5\},
+\]
+so \(\theta^*=3\) and leaving index is the artificial \(a_1\). After the
+pivot the basis becomes \(B=\{x_1,x_2\}\) and the basic solution is
+\[
+x_B = B^{-1} b = \begin{bmatrix}2 & -1 \\[2pt] -1 & 1\end{bmatrix}
+\begin{bmatrix}4\\[2pt]5\end{bmatrix} = \begin{bmatrix}3\\[2pt]1\end{bmatrix}.
+\]
+All artificial variables are now nonbasic (zero). The Phase~I objective is
+exactly zero, confirming feasibility of the original LP. We may now drop
+\(a_1,a_2\) and start Phase~II from the feasible basis
+\(B=\{x_1,x_2\}\) with initial feasible solution \(x=(3,1)\).
+
+\paragraph{Remarks on Phase~I.}
+This worked example demonstrates the usual pattern: start with artificial
+columns as the identity, use Phase~I minimization to drive the artificial
+variables to zero (if feasible), then remove them and continue in Phase~II
+from the resulting feasible basis. The same sequence of dual solves,
+reduced-cost computations, linear solves for directions, and ratio tests is
+used in both phases; only the objective vector changes.
+
+\subsection{Degeneracy, cycling and Bland's rule}
+
+Degeneracy occurs when a basic variable is exactly zero at a BFS (within the
+numerical tolerance). Degeneracy can cause the objective to remain unchanged
+across a pivot (a \emph{degenerate pivot}), and—if poorly handled—can lead
+to cycling.
+
+\paragraph{A small degenerate example.}
+Consider
+\[
+\max\; x_1 + x_2
+\quad\text{subject to}\quad
+\begin{aligned}
+x_1 + x_2 &\le 1,\\[2pt]
+x_1 + 2x_2 &\le 1,\\[2pt]
+x_1,x_2 &\ge 0.
+\end{aligned}
+\]
+Add slacks \(s_1,s_2\) and use the ordering \((x_1,x_2,s_1,s_2)\). With the
+initial basis \(B=\{s_1,s_2\}\) we have \(x_B=[1,1]^\T\) and objective \(0\).
+
+If \(x_1\) is chosen to enter, the direction is \(d=[1,1]^\T\) and the
+ratio test gives ties \(1/1=1\) and \(1/1=1\). If the algorithm picks the
+first row to leave the basis we obtain the new basic solution
+\((x_1,s_2) = (1,0)\) and \(x_2,s_1=(0,0)\); note that the new BFS has one
+or more basic variables equal to zero (degeneracy). A subsequent pivot may
+not increase the objective (degenerate pivot). Repeated degenerate pivots
+with unwise tie-breaking are the mechanism that can produce cycling.
+
+\paragraph{Bland's anti-cycling rule.}
+Bland's rule prescribes a deterministic tie-breaking: always choose the
+entering (and leaving) variable with the smallest index among those that are
+eligible. Bland's rule guarantees finite termination (no cycling). For
+coursework or small experiments we recommend implementing Bland's rule as a
+fallback: use aggressive pricing (largest reduced cost) for speed, but if a
+pivot repeats a basis exactly (or if a maximum number of degenerate pivots
+is observed) switch to Bland's rule for safety.
+
+\subsection{Unboundedness test (simple analytic check)}
+
+A textbook unbounded example (explicit and easy to analyze) is
+\[
+\max\; x_1 + x_2 \quad\text{subject to } x_1 - x_2 = 1,\quad x_1,x_2\ge0.
+\]
+Write the equality in standard-form with variable ordering \((x_1,x_2)\).
+The single-row constraint matrix is \(A=[1\; -1]\) and \(b=1\). A feasible
+basis is \(B=\{x_1\}\) with \(x_1=b=1\) and \(x_2=0\).
+
+Compute the direction for the nonbasic column \(x_2\):
+\[
+d = B^{-1} a_{x_2} = 1\cdot (-1) = -1 \le 0.
+\]
+Because \(d\le 0\) componentwise, increasing \(x_2\) does not force any
+basic variable below zero; hence the objective can be increased arbitrarily
+along that direction and the LP is unbounded. The revised simplex detects
+this in one step (when the direction vector has no positive components the
+ratio test fails and the solver returns an unbounded certificate).
+
+\subsection{Suggestions for ``hard'' / stress tests}
+
+To exercise a revised-simplex implementation (numerical stability, LU
+updates, degeneracy handling), try the following types of problems:
+\begin{itemize}
+  \item \textbf{Nearly singular bases:} construct \(A\) with columns that
+    are nearly linearly dependent (e.g., add a small multiple \(\varepsilon\)
+    of one column to another). This stresses LU factorization pivoting and
+    condition-number checks.
+  \item \textbf{Degenerate networks:} small network-flow instances where many
+    basic variables are zero; these provoke many degenerate pivots.
+  \item \textbf{Phase~I-heavy cases:} chains of \texttt{\textgreater=} and
+    equality constraints that force many artificials initially; validate
+    that your Phase~I objective reliably reaches (near) zero for feasible
+    problems and that artificials are removed correctly.
+  \item \textbf{Unbounded directions:} include a simple equality that leaves
+    a free positive ray (as in the unbounded example above) to check the
+    solver's unbounded certificate.
+\end{itemize}
+
+\paragraph{Remark on logging and reproducibility}
+For each experiment save an iteration log (entering/leaving indices,
+objective, condition number of \(B\), LU rebuild events) to
+\texttt{results/<problem>.log}. This makes it straightforward to fill the
+tables in Section~\ref{sec:comparison} with measured numbers and to
+reproduce pathological behaviour.
+
+
+\section{Comparison with SciPy}
+\label{sec:comparison_scipy}
+
+To validate our implementation, we compared it against SciPy's HiGHS backend using the two worked examples from Section~\ref{sec:experiments}. Each experiment was executed with the script \texttt{run\_experiments.py} (defaults: 6 repeats, 1 warmup $\rightarrow$ 5 measured trials). Timing was recorded using \texttt{time.perf\_counter()}, and reported times are the median values with sample standard deviations over the measured trials. The revised solver provides simplex-specific diagnostics (simplex pivots, LU rebuilds, final basis indices), whereas HiGHS reports internal iteration counts (\texttt{res.nit}) that do not correspond to simplex pivots. The basis condition number, $\mathrm{Cond}(B)$, was computed using \texttt{numpy.linalg.cond} on the final basis matrix, when available.
+
+\begin{table}[h!]
+\centering
+\small
+\begin{tabular}{ll l r r r r r}
+\toprule
+Problem & Solver & Status & Obj & Residual ($\|Ax-b\|_\infty$) & Iter & LU rebuilds & $\mathrm{Cond}(B)$ \\
+\midrule
+example1 & revised        & Optimal & $12.0$ & $0.0$ & $1$ & $2$ & $2.6180$ \\
+example1 & SciPy (HiGHS)  & Optimal & $12.0$ & $0.0$ & $2$\textsuperscript{a} & --- & --- \\
+\midrule
+example2\_phaseI & revised        & Optimal & $0.0$ & $0.0$ & $2$ & $3$ & $6.8541$ \\
+example2\_phaseI & SciPy (HiGHS)  & Optimal & $0.0$ & $0.0$ & $2$\textsuperscript{a} & --- & --- \\
+\bottomrule
+\end{tabular}
+
+\vspace{6pt}
+
+\begin{tabular}{ll r r r}
+\toprule
+Problem & Solver & Time (median, s) & Time (std, s) & Trials \\
+\midrule
+example1 & revised        & $1.1578\times10^{-4}$ & $2.3582\times10^{-5}$ & $5$ \\
+example1 & SciPy (HiGHS)  & $8.4918\times10^{-4}$ & $8.9171\times10^{-4}$ & $5$ \\
+\midrule
+example2\_phaseI & revised        & $1.3740\times10^{-4}$ & $1.6711\times10^{-5}$ & $5$ \\
+example2\_phaseI & SciPy (HiGHS)  & $8.7754\times10^{-4}$ & $1.5965\times10^{-4}$ & $5$ \\
+\bottomrule
+\end{tabular}
+
+\caption{Comparison summary. For the revised solver, `Iter' indicates the number of simplex pivots; HiGHS reports internal iterations. `---' indicates metrics not available. Times are measured with \texttt{time.perf\_counter()} and represent median $\pm$ sample standard deviation over measured trials.}
+\label{tab:comparison_scipy}
+
+\bigskip
+\noindent\textsuperscript{a} HiGHS internal iterations (\texttt{res.nit}), not simplex pivots.
+\end{table}
+
+\paragraph{Key Observations}
+\begin{itemize}
+\item \textbf{Correctness:} Both solvers yield identical objective values and feasibility residuals for the test problems (example1 optimum $=12.0$; example2\_phaseI Phase~I optimum $=0.0$). The revised implementation is therefore numerically consistent with HiGHS on these examples.
+\item \textbf{Diagnostics:} The revised solver provides detailed basis-level information (simplex pivots, LU rebuilds, final basis, and condition number). HiGHS does not expose these quantities through \texttt{linprog}, hence the `---' entries in Table~\ref{tab:comparison_scipy}.
+\item \textbf{Performance on small problems:} On these tiny examples the Python implementation is substantially faster than SciPy/HiGHS: the revised solver's median time is $\approx 1.16\times10^{-4}\,$s on \texttt{example1} (about $7.3\times$ faster than HiGHS's $\approx 8.49\times10^{-4}\,$s) and $\approx 1.37\times10^{-4}\,$s on \texttt{example2\_phaseI} (about $6.4\times$ faster than HiGHS's $\approx 8.78\times10^{-4}\,$s). This behaviour is expected for very small problems: our lightweight Python implementation avoids HiGHS startup/presolve overhead and per-call fixed costs dominate. For medium-to-large or highly sparse problems, HiGHS and other highly-optimized solvers typically outperform a simple Python solver.
+\item \textbf{Numerical behaviour:} Final basis condition numbers are small to moderate ($\approx 2.62$ and $6.85$), and feasibility residuals are at machine precision ($<10^{-12}$). Larger and numerically challenging instances should be tested to fully exercise LU pivoting and numerical safeguards (see Section~\ref{sec:implementation}).
+\end{itemize}
+
+\paragraph{Reproducibility}
+All per-run JSON logs and the aggregated \texttt{results/summary.csv} used to build Table~\ref{tab:comparison_scipy} are saved in the \texttt{results/} directory (e.g., \texttt{example1\_revised\_run1.json}, \texttt{example1\_scipy\_run.json}, \texttt{summary.csv}). Re-run \texttt{code/run\_experiments.py} to refresh these numbers if you modify the solver or experiment settings.
+
+% -------------------------
+\section{Conclusion}
+\label{sec:conclusion}
+
+This report has presented the Revised Simplex method from theory to
+implementation and demonstrated its behaviour on several illustrative
+examples.  Concretely, we:
+\begin{itemize}
+  \item Derived the dual and reduced-cost formulas used by the revised
+        algorithm and explained the connection to the classical tableau;
+  \item Described a practical LU-based implementation supporting Phase~I
+        feasibility recovery, pivoting strategies, and anti-cycling measures;
+  \item Demonstrated correctness and basic performance on worked examples,
+        and compared diagnostics and timings against SciPy/HiGHS
+        (Table~\ref{tab:comparison_scipy}).
+\end{itemize}
+
+Our experiments confirm that the revised implementation reproduces the
+expected simplex pivots and returns the same optima and feasibility residuals
+as HiGHS on the small test problems, while providing richer basis-level
+diagnostics.  The implementation remains primarily educational: for
+medium-to-large or highly sparse instances, performance and numerical
+robustness will benefit from specialised sparse factorizations, more
+sophisticated pricing (partial or steepest-edge), and systematic LU-rebuild
+policies.  We therefore recommend these extensions as priorities for future
+work.
+
+All scripts, per-run logs, and aggregated results are saved under
+\texttt{results/} to facilitate reproducibility.  Releasing the implementation
+and test-suite (with pinned dependencies) will further aid validation and
+comparative studies.
+
+\clearpage
+\nocite{*} % include all entries from bib/references.bib; remove if you only want cited entries
+\printbibliography[heading=bibintoc,title={References}]
+
+
+\section*{License}
+This work is licensed under a 
+\href{https://creativecommons.org/licenses/by-sa/4.0/}{Creative Commons Attribution-ShareAlike 4.0 International (CC BY-SA 4.0) License}.
+
+\end{document}
+
+
