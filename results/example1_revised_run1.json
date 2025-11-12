@@ -1,0 +1,22 @@
+{
+  "elapsed": 0.00011486500079627149,
+  "out": {
+    "status": "optimal",
+    "x": [
+      4.0,
+      0.0,
+      0.0,
+      2.0
+    ],
+    "objective": 12.0,
+    "iterations": 1,
+    "rebuilds": 2,
+    "B_idx": [
+      0,
+      3
+    ]
+  },
+  "objective": 12.0,
+  "residual": 0.0,
+  "condB": 2.6180339887498953
+}
